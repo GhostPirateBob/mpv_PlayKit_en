@@ -34,14 +34,35 @@ def process(
     model: int,
     gpu_id: int,
     gpu_t: int,
+    padding_enabled: bool = False,
+    padding_orig_w: int = 0,
+    padding_orig_h: int = 0,
+    multiplier: int = 2,
+    # Config from template
+    model_dir: str = "rife_v2",
+    model_map: str = "{}",
+    ensemble: bool = False,
+    implementation: int = 2,
+    trt_int8: bool = False,
+    trt_fp16: bool = True,
+    trt_workspace: int = 256,
+    trt_cuda_graph: bool = True,
+    trt_cublas: bool = True,
+    trt_cudnn: bool = True,
+    trt_static_shape: bool = True,
 ) -> vs.VideoNode:
+
+    # Validate multiplier parameter
+    if multiplier not in (2, 3):
+        raise vs.Error(f"Invalid multiplier: {multiplier}. Must be 2 or 3")
 
     # Log function entry
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
         f"[rife_adaptive][PY_INIT] Starting RIFE processing: "
         f"clip={clip.width}x{clip.height}, "
         f"crop=({crop_l},{crop_t},{crop_w},{crop_h}), "
-        f"target={target_w}x{target_h}, model={model}, gpu={gpu_id}, threads={gpu_t}")
+        f"target={target_w}x{target_h}, model={model}, gpu={gpu_id}, "
+        f"threads={gpu_t}, multiplier={multiplier}")
 
     # 1. Apply Crop
     # We do this first so we don't process pixels we are about to throw away
@@ -65,7 +86,21 @@ def process(
         core.log_message(vs.MESSAGE_TYPE_DEBUG,
             f"[rife_adaptive][PY_CROP] No crop specified (crop_w={crop_w}, crop_h={crop_h})")
 
-    # 2. Prepare for AI (Single Pass: Resize + Format Convert)
+    # 2. Handle Padding or Resize
+    if padding_enabled:
+        # Padding path: add black borders, process at padded size, crop back after RIFE
+        pad_right = target_w - clip.width
+        pad_bottom = target_h - clip.height
+
+        core.log_message(vs.MESSAGE_TYPE_DEBUG,
+            f"[rife_adaptive][PY_PAD] Padding: right={pad_right}, bottom={pad_bottom}")
+
+        if pad_right > 0 or pad_bottom > 0:
+            clip = core.std.AddBorders(clip, left=0, right=pad_right, top=0, bottom=pad_bottom)
+            core.log_message(vs.MESSAGE_TYPE_DEBUG,
+                f"[rife_adaptive][PY_PAD] After padding: {clip.width}x{clip.height}")
+
+    # 3. Prepare for AI (Format Convert, optionally Resize)
     # RIFE requires RGB input (RGBH is best for TensorRT FP16)
 
     # Detect Color Matrix (Keep 709 as safe default)
@@ -77,38 +112,58 @@ def process(
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
         f"[rife_adaptive][PY_MATRIX] Mapped to resize matrix: '{matrix_str}'")
 
-    # Determine final dimensions
-    # If target_w is 0 (native res), use current width
-    dest_w = target_w if target_w > 0 else clip.width
-    dest_h = target_h if target_h > 0 else clip.height
+    if padding_enabled:
+        # Padding path: only convert format, no resize (already at target size from padding)
+        core.log_message(vs.MESSAGE_TYPE_DEBUG,
+            f"[rife_adaptive][PY_CONVERT] Format only: {clip.width}x{clip.height} -> RGBH (matrix={matrix_str})")
 
-    core.log_message(vs.MESSAGE_TYPE_DEBUG,
-        f"[rife_adaptive][PY_RESIZE] Target dimensions: {dest_w}x{dest_h}")
+        clip_rgb = core.resize.Spline36(
+            clip,
+            format=vs.RGBH,
+            matrix_in_s=matrix_str
+        )
+    else:
+        # Downscale path: resize and convert in one step
+        dest_w = target_w if target_w > 0 else clip.width
+        dest_h = target_h if target_h > 0 else clip.height
 
-    # ONE RESIZE TO RULE THEM ALL:
-    # Changes Size AND Format (YUV -> RGBH) in one optimized step
-    core.log_message(vs.MESSAGE_TYPE_DEBUG,
-        f"[rife_adaptive][PY_RESIZE] Single-pass Spline36: "
-        f"{clip.width}x{clip.height} {clip.format.name} -> {dest_w}x{dest_h} RGBH (matrix={matrix_str})")
+        core.log_message(vs.MESSAGE_TYPE_DEBUG,
+            f"[rife_adaptive][PY_RESIZE] Single-pass Spline36: "
+            f"{clip.width}x{clip.height} {clip.format.name} -> {dest_w}x{dest_h} RGBH (matrix={matrix_str})")
 
-    clip_rgb = core.resize.Spline36(
-        clip,
-        width=dest_w,
-        height=dest_h,
-        format=vs.RGBH,
-        matrix_in_s=matrix_str
-    )
+        clip_rgb = core.resize.Spline36(
+            clip,
+            width=dest_w,
+            height=dest_h,
+            format=vs.RGBH,
+            matrix_in_s=matrix_str
+        )
 
     # 3. Model Path Logic
     plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
         f"[rife_adaptive][PY_MODEL] Plugin directory: {plg_dir}")
 
-    mdl_pname = "rife_v2/"
-    mdl_fname = {
-        4151: "rife_v4.15_lite",
-        4221: "rife_v4.22_lite",
-    }.get(model, "rife_v4.15")
+    # Parse model_map - may be dict (from template) or JSON string
+    import json
+    if isinstance(model_map, dict):
+        model_mapping = model_map
+    elif model_map:
+        try:
+            model_mapping = json.loads(model_map)
+        except json.JSONDecodeError:
+            model_mapping = {}
+    else:
+        model_mapping = {}
+
+    mdl_pname = model_dir + "/"
+    mdl_fname = model_mapping.get(str(model), model_mapping.get(model, "rife_v4.15"))
+    if not mdl_fname or mdl_fname == "rife_v4.15":
+        # Fallback to default mapping if model_map doesn't have this model
+        mdl_fname = {
+            4151: "rife_v4.15_lite",
+            4221: "rife_v4.22_lite",
+        }.get(model, "rife_v4.15")
     mdl_pth = plg_dir + "/models/" + mdl_pname + mdl_fname + ".onnx"
 
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
@@ -124,27 +179,28 @@ def process(
     # 4. RIFE Execution
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
         f"[rife_adaptive][PY_RIFE] Executing with: "
-        f"model={model}, ensemble=False, gpu_threads={gpu_t}, "
-        f"backend=TRT(fp16=True, static_shape=True, device={gpu_id})")
+        f"multiplier={multiplier}x, "
+        f"model={model}, ensemble={ensemble}, gpu_threads={gpu_t}, "
+        f"backend=TRT(fp16={trt_fp16}, static_shape={trt_static_shape}, device={gpu_id})")
 
     clip_rife = vsmlrt.RIFE(
         clip=clip_rgb,
-        multi=fractions.Fraction(2, 1),
+        multi=fractions.Fraction(multiplier, 1),
         scale=1,
         model=model,
-        ensemble=False,
-        _implementation=2,
+        ensemble=ensemble,
+        _implementation=implementation,
         video_player=True,
         backend=vsmlrt.BackendV2.TRT(
             num_streams=gpu_t,
-            int8=False,
-            fp16=True,
+            int8=trt_int8,
+            fp16=trt_fp16,
             output_format=1,
-            workspace=256,
-            use_cuda_graph=True,
-            use_cublas=True,
-            use_cudnn=True,
-            static_shape=True,
+            workspace=trt_workspace,
+            use_cuda_graph=trt_cuda_graph,
+            use_cublas=trt_cublas,
+            use_cudnn=trt_cudnn,
+            static_shape=trt_static_shape,
             min_shapes=[0, 0],
             opt_shapes=None,
             max_shapes=None,
@@ -156,7 +212,20 @@ def process(
     core.log_message(vs.MESSAGE_TYPE_DEBUG,
         f"[rife_adaptive][PY_RIFE] RIFE execution configured successfully")
 
-    # 5. Output Conversion (RGBH -> YUV420P10)
+    # 5. Crop back if padding was used
+    if padding_enabled and (padding_orig_w > 0 and padding_orig_h > 0):
+        crop_right = clip_rife.width - padding_orig_w
+        crop_bottom = clip_rife.height - padding_orig_h
+
+        core.log_message(vs.MESSAGE_TYPE_DEBUG,
+            f"[rife_adaptive][PY_CROP_BACK] Removing padding: right={crop_right}, bottom={crop_bottom}")
+
+        if crop_right > 0 or crop_bottom > 0:
+            clip_rife = core.std.Crop(clip_rife, left=0, right=crop_right, top=0, bottom=crop_bottom)
+            core.log_message(vs.MESSAGE_TYPE_DEBUG,
+                f"[rife_adaptive][PY_CROP_BACK] After crop: {clip_rife.width}x{clip_rife.height}")
+
+    # 6. Output Conversion (RGBH -> YUV420P10)
     # We must convert back to YUV for MPV/Display:
     # Nvidia VSR requires YUV (NV12/P010) input and solves banding
     core.log_message(vs.MESSAGE_TYPE_DEBUG,

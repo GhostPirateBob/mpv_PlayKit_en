@@ -81,7 +81,8 @@ def parse_log(log_path: Path) -> dict:
         'lua_error': re.compile(r'\[.*?\]\[(e|f)\]\[.*?\].*?(Lua error:|attempt to call|attempt to compare|attempt to perform|Profile condition error)'),
         'script_loading': re.compile(r'Loading (lua )?script (.+)'),
         'vapoursynth': re.compile(r'\[vapoursynth\](.*)'),
-        'rife_adaptive_cat': re.compile(r'\[rife_adaptive\]\[([A-Z_]+)\]\s*(.*)'),  # NEW: Extract category
+        'rife_adaptive_cat': re.compile(r'\[rife_adaptive\]\[([A-Z_]+)\]\s*(.*)'),  # Extract category (Lua logs)
+        'rife_adaptive_py': re.compile(r'\[rife_adaptive\]\[(PY_[A-Z_]+)\]\s*(.*)'),  # Extract Python category
         'timestamp': re.compile(r'^\[\s*([0-9.]+)\]'),  # Extract timestamp
         'python_exception': re.compile(r'(Python exception|Traceback|ModuleNotFoundError|ImportError|AttributeError)'),
     }
@@ -117,7 +118,7 @@ def parse_log(log_path: Path) -> dict:
                 in_traceback = False
                 traceback_lines = []
 
-        # Check for RIFE adaptive messages with categories
+        # Check for RIFE adaptive messages with categories (Lua logs)
         cat_match = patterns['rife_adaptive_cat'].search(line)
         if cat_match:
             category = cat_match.group(1)
@@ -141,6 +142,22 @@ def parse_log(log_path: Path) -> dict:
                     current_session = None
 
             # Add event to current session
+            if current_session:
+                current_session.events.append((i, timestamp, category, message))
+
+            # Add to category grouping
+            results['rife_by_category'][category].append((i, timestamp, message))
+
+            # Add to general rife_adaptive list
+            results['rife_adaptive'].append((i, line))
+
+        # Check for Python RIFE messages (from VapourSynth logs)
+        py_match = patterns['rife_adaptive_py'].search(line)
+        if py_match:
+            category = py_match.group(1)  # e.g., PY_INIT, PY_PAD, PY_CROP_BACK
+            message = py_match.group(2)
+
+            # Add event to current session if one is active
             if current_session:
                 current_session.events.append((i, timestamp, category, message))
 
@@ -215,7 +232,7 @@ def print_script_loading(items: list):
             parent_dir = Path(script_path).parent.name
             print(f"  [{timestamp:>8s}s] {script_name} → .../{parent_dir}/")
 
-def print_session_timeline(session: RIFESession, show_lua=True, show_python=True):
+def print_session_timeline(session: RIFESession, show_lua=True, show_python=True, filter_categories=None):
     """Print chronological timeline of a single session."""
     print(f"\n{Colors.CYAN}{Colors.BOLD}{'='*70}{Colors.RESET}")
     print(f"{Colors.CYAN}{Colors.BOLD}RIFE SESSION #{session.session_id} "
@@ -230,6 +247,10 @@ def print_session_timeline(session: RIFESession, show_lua=True, show_python=True
     elif show_python:
         events_to_show = session.python_events
 
+    # Apply category filter if specified
+    if filter_categories:
+        events_to_show = [e for e in events_to_show if e[2] in filter_categories]
+
     if not events_to_show:
         print(f"  {Colors.YELLOW}No events in this session{Colors.RESET}")
         return
@@ -237,8 +258,10 @@ def print_session_timeline(session: RIFESession, show_lua=True, show_python=True
     for line_num, timestamp, category, message in events_to_show:
         relative_time = timestamp - session.start_time
 
-        # Color code by category
-        if category.startswith('PY_'):
+        # Color code by category with more granularity
+        if category.startswith('PY_PAD') or category == 'PY_CROP_BACK':
+            cat_color = Colors.GREEN + Colors.BOLD  # Highlight padding operations
+        elif category.startswith('PY_'):
             cat_color = Colors.GREEN
         elif category in ['TOGGLE', 'INIT']:
             cat_color = Colors.CYAN
@@ -297,7 +320,19 @@ def summarize(results: dict):
     print(f"\n{Colors.GREEN}{Colors.BOLD}SUMMARY{Colors.RESET}")
     print(f"{'─'*40}")
     print(f"  RIFE sessions:          {len(results.get('rife_sessions', []))}")
-    print(f"  Total RIFE events:      {sum(len(s.events) for s in results.get('rife_sessions', []))}")
+
+    total_lua = sum(len(s.lua_events) for s in results.get('rife_sessions', []))
+    total_py = sum(len(s.python_events) for s in results.get('rife_sessions', []))
+
+    print(f"  Total RIFE events:      {sum(len(s.events) for s in results.get('rife_sessions', []))} (Lua: {total_lua}, Python: {total_py})")
+
+    # Show Python event breakdown
+    py_categories = {k: v for k, v in results.get('rife_by_category', {}).items() if k.startswith('PY_')}
+    if py_categories:
+        print(f"  Python events by type:")
+        for cat in sorted(py_categories.keys()):
+            print(f"    - {cat:<15} {len(py_categories[cat])} events")
+
     print(f"  Errors found:           {len(results.get('errors', []))}")
     print(f"  Lua script errors:      {len(results.get('lua_errors', []))}")
     print(f"  Scripts loaded:         {len(results.get('script_loading', []))}")
@@ -326,6 +361,8 @@ Examples:
     parser.add_argument('--lua-only', action='store_true', help='Show only Lua events')
     parser.add_argument('--python-only', action='store_true', help='Show only Python events')
     parser.add_argument('--all-sessions', action='store_true', help='Show all sessions (not just latest)')
+    parser.add_argument('--padding', action='store_true', help='Show only padding-related events (PY_PAD, PY_CROP_BACK)')
+    parser.add_argument('--verbose', action='store_true', help='Show all VapourSynth messages and errors')
 
     args = parser.parse_args()
 
@@ -358,6 +395,13 @@ Examples:
     if sessions:
         print_session_summary(sessions)
 
+        # Build category filter
+        filter_cats = None
+        if args.padding:
+            filter_cats = ['PY_PAD', 'PY_CROP_BACK', 'VPY']  # Include VPY to show pipeline string
+        elif args.category:
+            filter_cats = args.category.split(',')
+
         # Show specific session or latest
         if args.session:
             target = [s for s in sessions if s.session_id == args.session]
@@ -365,7 +409,8 @@ Examples:
                 print_session_timeline(
                     target[0],
                     show_lua=not args.python_only,
-                    show_python=not args.lua_only
+                    show_python=not args.lua_only,
+                    filter_categories=filter_cats
                 )
             else:
                 print(f"{Colors.RED}Session {args.session} not found{Colors.RESET}")
@@ -374,7 +419,8 @@ Examples:
                 print_session_timeline(
                     session,
                     show_lua=not args.python_only,
-                    show_python=not args.lua_only
+                    show_python=not args.lua_only,
+                    filter_categories=filter_cats
                 )
         else:
             # Show latest session by default
@@ -382,7 +428,8 @@ Examples:
                 print_session_timeline(
                     sessions[-1],
                     show_lua=not args.python_only,
-                    show_python=not args.lua_only
+                    show_python=not args.lua_only,
+                    filter_categories=filter_cats
                 )
 
     # Grouped view if requested
@@ -396,7 +443,12 @@ Examples:
             print_category_grouped(results)
 
     # Print VapourSynth messages
-    print_section("VAPOURSYNTH MESSAGES", results['vapoursynth'][:30], Colors.YELLOW)
+    vs_limit = len(results['vapoursynth']) if args.verbose else 30
+    print_section("VAPOURSYNTH MESSAGES", results['vapoursynth'][:vs_limit], Colors.YELLOW)
+
+    # Print errors if verbose
+    if args.verbose and results['errors']:
+        print_section("ALL ERRORS", results['errors'], Colors.RED)
 
     # Summary
     summarize(results)

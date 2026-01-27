@@ -18,44 +18,36 @@ local script_dir = script_path:match("(.*/)")  or script_path:match("(.*\\)") or
 package.path = script_dir .. "?.lua;" .. package.path
 
 local core = require('rife_core')
+local StateManager = require('rife_state_manager')
+local TemplateLoader = require('rife_template_loader')
+local ConfigLoader = require('config_loader')
+local PauseHandler = require('rife_pause_handler')
 
 -----------
 -- Configuration
 -----------
 
-local opts = {
-    max_pixels_vsr_on = 2.0,   -- GPU power when VSR will upscale (RTX 2060S)
-    max_pixels_vsr_off = 3.0,  -- GPU power for standard upscale (RTX 2060S)
-    model = 4221,              -- RIFE model number
-    gpu_id = 0,                -- GPU device
-    gpu_threads = 2,           -- GPU threads
-    enable_vsr = true,         -- Nvidia VSR upscale to screen height
-    min_vsr_mult = 1.5,        -- Minimum display/target ratio for VSR activation
-}
+local script_dir_full = mp.command_native({"expand-path", "~~/vs/rife_adapting_2"})
+local config = ConfigLoader.load(script_dir_full)
 
 -- Log configuration on load
-mp.msg.debug("[rife_adaptive][INIT] Configuration loaded: enable_vsr=" .. tostring(opts.enable_vsr) ..
-             ", max_pixels_vsr_on=" .. opts.max_pixels_vsr_on ..
-             ", max_pixels_vsr_off=" .. opts.max_pixels_vsr_off ..
-             ", model=" .. opts.model ..
-             ", gpu_id=" .. opts.gpu_id ..
-             ", gpu_threads=" .. opts.gpu_threads ..
-             ", min_vsr_mult=" .. opts.min_vsr_mult)
+mp.msg.debug("[rife_adaptive][INIT] Configuration loaded: enable_vsr=" .. tostring(config.features.enable_vsr) ..
+             ", max_pixels_vsr_on=" .. config.gpu.max_pixels_vsr_on ..
+             ", max_pixels_vsr_off=" .. config.gpu.max_pixels_vsr_off ..
+             ", model=" .. config.rife.model_number ..
+             ", gpu_id=" .. config.gpu.device_id ..
+             ", gpu_threads=" .. config.gpu.threads ..
+             ", min_vsr_mult=" .. config.thresholds.vsr_min_mult ..
+             ", enable_x3_adaptive=" .. tostring(config.features.enable_x3_adaptive))
 
 -----------
 -- State
 -----------
 
-local state = {
-    rife_active = false,
-    current_crop = nil,
-    cropdetect_timer = nil,
-    is_fullscreen = false,
-    target_w = nil,
-    target_h = nil,
-    vsr_path_active = false,
-    pid = mp.get_property_native("pid") or "0",
-}
+local state_manager = StateManager:new(mp.get_property_native("pid") or "0")
+
+-- Load VPY template
+local template = TemplateLoader:load(script_dir_full .. "/templates/rife.vpy.template")
 
 -----------
 -- Forward Declarations
@@ -97,31 +89,31 @@ local function osd_message(msg, duration)
 end
 
 local function update_vsr_state()
-    mp.msg.debug("[rife_adaptive][VSR] Update requested: rife_active=" .. tostring(state.rife_active) ..
-                 ", vsr_path=" .. tostring(state.vsr_path_active) ..
-                 ", fullscreen=" .. tostring(state.is_fullscreen) ..
-                 ", target=" .. tostring(state.target_w) .. "x" .. tostring(state.target_h))
+    mp.msg.debug("[rife_adaptive][VSR] Update requested: rife_active=" .. tostring(state_manager:get_rife_active()) ..
+                 ", vsr_path=" .. tostring(state_manager:get_vsr_path_active()) ..
+                 ", fullscreen=" .. tostring(state_manager:get_is_fullscreen()) ..
+                 ", target=" .. tostring(state_manager:get_target_w()) .. "x" .. tostring(state_manager:get_target_h()))
 
-    if not state.rife_active or not state.vsr_path_active or not state.target_w then
+    if not state_manager:get_rife_active() or not state_manager:get_vsr_path_active() or not state_manager:get_target_w() then
         mp.commandv("vf", "remove", "@rife-vsr")
         mp.msg.debug("[rife_adaptive][VSR] Removed (not in VSR path or RIFE inactive)")
         return
     end
 
-    if state.is_fullscreen then
+    if state_manager:get_is_fullscreen() then
         local screen_w, screen_h = get_screen_dims()
 
         mp.msg.debug("[rife_adaptive][VSR] Calculating scale: screen=" .. screen_w .. "x" .. screen_h ..
-                     ", target=" .. state.target_w .. "x" .. state.target_h)
+                     ", target=" .. state_manager:get_target_w() .. "x" .. state_manager:get_target_h())
 
-        local scale_w = screen_w / state.target_w
-        local scale_h = screen_h / state.target_h
+        local scale_w = screen_w / state_manager:get_target_w()
+        local scale_h = screen_h / state_manager:get_target_h()
         local vsr_scale = math.min(scale_w, scale_h)
 
         mp.msg.debug("[rife_adaptive][VSR] Scale check: " .. string.format("%.2f", vsr_scale) ..
-                     " >= " .. opts.min_vsr_mult)
+                     " >= " .. config.thresholds.vsr_min_mult)
 
-        if vsr_scale >= opts.min_vsr_mult then
+        if vsr_scale >= config.thresholds.vsr_min_mult then
             mp.commandv("vf", "remove", "@rife-vsr")
             mp.command(string.format('vf add @rife-vsr:d3d11vpp:scaling-mode=nvidia:scale=%.10f', vsr_scale))
             mp.msg.debug("[rife_adaptive][VSR] ACTIVATED: scale=" .. string.format("%.2f", vsr_scale))
@@ -133,7 +125,7 @@ local function update_vsr_state()
     end
 
     mp.commandv("vf", "remove", "@rife-vsr")
-    if state.is_fullscreen then
+    if state_manager:get_is_fullscreen() then
         osd_message("VSR OFF", 2)
     end
 end
@@ -142,10 +134,13 @@ end
 -- Crop Detection
 -----------
 
+-- Config for crop detection
+local MAX_CROP_RATIO = 0.30  -- Max 30% of height can be cropped (prevents false positives on dark scenes)
+local CROP_LIMIT_RATIO = 16/255  -- limit=16/255 (~6.3%) instead of 24/255 (~9.4%) for dark scenes
+
 local function finish_crop_detection()
-    if state.cropdetect_timer then
-        state.cropdetect_timer:kill()
-        state.cropdetect_timer = nil
+    if state_manager:get_cropdetect_timer() then
+        state_manager:get_cropdetect_timer():kill()
     end
 
     local meta = mp.get_property_native("vf-metadata/rife-cropdetect") or {}
@@ -161,35 +156,83 @@ local function finish_crop_detection()
                  ", x=" .. (x or "nil") ..
                  ", y=" .. (y or "nil"))
 
+    local crop_result
     if w and h and x and y then
         local source_w, source_h = get_source_dims()
+
+        -- Calculate actual crop amounts from each side
+        local crop_left = x
+        local crop_right = source_w - (x + w)
+        local crop_top = y
+        local crop_bottom = source_h - (y + h)
+
+        mp.msg.debug("[rife_adaptive][CROP] Crop amounts: L=" .. crop_left .. ", R=" .. crop_right ..
+                     ", T=" .. crop_top .. ", B=" .. crop_bottom)
+
+        -- Normalize to symmetric: use MIN crop from opposite sides
+        -- Safer: if one side has excessive crop due to dark scene, we don't over-crop
+        local crop_h_sym = math.min(crop_left, crop_right)
+        local crop_v_sym = math.min(crop_top, crop_bottom)
+
+        -- Recalculate centered crop
+        x = crop_h_sym
+        y = crop_v_sym
+        w = source_w - (crop_h_sym * 2)
+        h = source_h - (crop_v_sym * 2)
+
+        mp.msg.debug("[rife_adaptive][CROP] Symmetric: using min H=" .. crop_h_sym .. ", V=" .. crop_v_sym ..
+                     " → " .. w .. "x" .. h .. " at (" .. x .. "," .. y .. ")")
+
         if h < source_h then
-            state.current_crop = { w = source_w, h = h, x = 0, y = y }
             local removed_px = source_h - h
-            mp.msg.debug("[rife_adaptive][CROP] Result: " .. source_w .. "x" .. h ..
-                         " at (0," .. y .. "), removed " .. removed_px .. "px vertical")
-            osd_message(string.format("Crop: %dx%d", source_w, h))
+            local crop_ratio = removed_px / source_h
+
+            -- Sanity check: don't crop if removing too much (likely dark scene content, not black bars)
+            if crop_ratio > MAX_CROP_RATIO then
+                crop_result = nil
+                mp.msg.debug("[rife_adaptive][CROP] Rejected: would remove " .. string.format("%.1f%%", crop_ratio * 100) ..
+                             " of frame (max " .. string.format("%.1f%%", MAX_CROP_RATIO * 100) .. ")")
+                osd_message("Crop rejected (too aggressive)")
+            else
+                crop_result = { w = w, h = h, x = x, y = y }
+                mp.msg.debug("[rife_adaptive][CROP] Result: " .. w .. "x" .. h ..
+                             " at (" .. x .. "," .. y .. "), removed " .. removed_px .. "px vertical (" ..
+                             string.format("%.1f%%", crop_ratio * 100) .. ")")
+                osd_message(string.format("Crop: %dx%d", w, h))
+            end
         else
-            state.current_crop = nil
+            crop_result = nil
             mp.msg.debug("[rife_adaptive][CROP] No black bars detected, using full frame " .. source_w .. "x" .. source_h)
             osd_message("No black bars detected")
         end
     else
-        state.current_crop = nil
+        crop_result = nil
         mp.msg.debug("[rife_adaptive][CROP] Detection failed, metadata incomplete")
         osd_message("Crop detection failed")
     end
 
+    state_manager:complete_crop_detection(crop_result)
     generate_and_apply_vpy()
 end
 
 local function start_crop_detection()
-    state.current_crop = nil
+    -- Check if user requested to skip crop (from previous abort during engine build)
+    if state_manager:get_skip_crop() then
+        mp.msg.debug("[rife_adaptive][CROP] Skipping crop detection (user requested skip)")
+        state_manager:complete_crop_detection(nil)  -- No crop
+        generate_and_apply_vpy()
+        return
+    end
+
+    state_manager:complete_crop_detection(nil)  -- Clear any existing crop
+    state_manager:set_initializing(true)  -- Mark as initializing (for shutdown detection)
     mp.msg.debug("[rife_adaptive][CROP] Starting detection (1s timeout)")
     osd_message("Detecting black bars...", 1)
 
-    mp.commandv("vf", "pre", "@rife-cropdetect:lavfi=[cropdetect=limit=24/255:round=2:reset=1]")
-    state.cropdetect_timer = mp.add_timeout(1.0, finish_crop_detection)
+    -- Use stricter limit to avoid false positives on dark scenes
+    mp.commandv("vf", "pre", "@rife-cropdetect:lavfi=[cropdetect=limit=" .. CROP_LIMIT_RATIO .. ":round=2:reset=1]")
+    local timer = mp.add_timeout(1.0, finish_crop_detection)
+    state_manager:set_crop_detection_timer(timer)
 end
 
 -----------
@@ -205,11 +248,12 @@ generate_and_apply_vpy = function()
     local crop_w, crop_h, crop_x, crop_y = source_w, source_h, 0, 0
 
     -- Use crop if detected
-    if state.current_crop then
-        crop_w = state.current_crop.w
-        crop_h = state.current_crop.h
-        crop_x = state.current_crop.x
-        crop_y = state.current_crop.y
+    local current_crop = state_manager:get_current_crop()
+    if current_crop then
+        crop_w = current_crop.w
+        crop_h = current_crop.h
+        crop_x = current_crop.x
+        crop_y = current_crop.y
     end
 
     mp.msg.debug("[rife_adaptive][VPY] Source: " .. source_w .. "x" .. source_h ..
@@ -218,49 +262,57 @@ generate_and_apply_vpy = function()
 
     -- UNIFIED LOGIC: Calculate targets and determine path in one place
     local screen_w, screen_h = get_screen_dims()
-    local target_w, target_h, vsr_active, scale = core.calculate_targets(crop_w, crop_h, screen_w, screen_h, opts)
+    local result = core.calculate_targets(crop_w, crop_h, screen_w, screen_h, config)
 
     -- Store results in state
-    state.target_w = target_w
-    state.target_h = target_h
-    state.vsr_path_active = vsr_active
+    state_manager:set_pipeline_targets(result.target_w, result.target_h, result.vsr_path)
 
-    mp.msg.debug(string.format("[rife_adaptive][VPY] Resolution: %dx%d -> %dx%d (Scale %.2f) | VSR Path: %s",
-        crop_w, crop_h, target_w, target_h, scale, tostring(vsr_active)))
+    -- Calculate interpolation multiplier (x2 or x3)
+    local fps = get_container_fps()
+    local target_pixels = result.target_w * result.target_h
+    local x3_threshold = config.gpu.max_pixels_vsr_on * 1000000 / 2
+    local use_x3 = config.features.enable_x3_adaptive and fps <= 30 and target_pixels <= x3_threshold
+    local multiplier = use_x3 and 3 or 2
 
-    -- Generate inline VPY content
-    -- Get absolute path to rife_adapting_2 directory
-    local script_dir = mp.command_native({"expand-path", "~~/vs/rife_adapting_2"})
-    local vpy_content = string.format([[
-import sys
-import os
-sys.path.insert(0, r"%s")
+    mp.msg.debug("[rife_adaptive][MULTI] fps=" .. fps ..
+                 ", target_pixels=" .. target_pixels ..
+                 ", x3_threshold=" .. x3_threshold ..
+                 ", use_x3=" .. tostring(use_x3) ..
+                 ", multiplier=" .. multiplier)
 
-import vapoursynth as vs
-from vapoursynth import core
-from rife_processor import process
+    -- Build pipeline string for OSD
+    local mode_str = use_x3 and "x3" or "x2"
+    local pipeline_str
+    if result.padding.enabled then
+        pipeline_str = string.format("%dx%d -> pad %dx%d -> RIFE [%s] -> %dx%d",
+            result.pipeline.crop_w, result.pipeline.crop_h,
+            result.pipeline.process_w, result.pipeline.process_h,
+            mode_str,
+            result.pipeline.output_w, result.pipeline.output_h)
+    else
+        pipeline_str = string.format("%dx%d -> scale %dx%d -> RIFE [%s] -> %dx%d",
+            result.pipeline.crop_w, result.pipeline.crop_h,
+            result.pipeline.process_w, result.pipeline.process_h,
+            mode_str,
+            result.pipeline.output_w, result.pipeline.output_h)
+    end
 
-clip = video_in
+    mp.msg.debug(string.format("[rife_adaptive][VPY] Resolution: %s (Scale %.2f) | VSR Path: %s | Padding: %s",
+        pipeline_str, result.scale, tostring(result.vsr_path), tostring(result.padding.enabled)))
 
-# Process with RIFE
-clip = process(
-    clip=clip,
-    crop_l=%d,
-    crop_t=%d,
-    crop_w=%d,
-    crop_h=%d,
-    target_w=%d,
-    target_h=%d,
-    model=%d,
-    gpu_id=%d,
-    gpu_t=%d
-)
+    -- Generate VPY content from template
+    local template_vars = state_manager:export_for_template({
+        script_dir = script_dir_full,
+        multiplier = multiplier,
+        padding_enabled = result.padding.enabled and "True" or "False",
+        padding_orig_w = result.padding.orig_w,
+        padding_orig_h = result.padding.orig_h,
+    })
 
-clip.set_output()
-]], script_dir, crop_x, crop_y, crop_w, crop_h, target_w, target_h, opts.model, opts.gpu_id, opts.gpu_threads)
+    local vpy_content = template:render(template_vars, config)
 
     -- Write VPY file (unique per PID to support multiple mpv instances)
-    local vpy_path = get_temp_dir() .. "/rife_adapting_2_" .. state.pid .. ".vpy"
+    local vpy_path = get_temp_dir() .. "/rife_adapting_2_" .. state_manager:get_pid() .. ".vpy"
     local f = io.open(vpy_path, "w")
     if not f then
         mp.msg.debug("[rife_adaptive][VPY] ERROR: Failed to create VPY file at " .. vpy_path)
@@ -274,31 +326,40 @@ clip.set_output()
 
     -- Remove our filters (safe if not present)
     mp.commandv("vf", "remove", "@rife-vsr")
-    mp.commandv("vf", "remove", "vapoursynth")
+    mp.commandv("vf", "remove", "@rife-vs")
 
-    -- Apply vapoursynth filter
-    mp.command(string.format('vf add vapoursynth="%s"', vpy_path))
+    -- Apply vapoursynth filter WITH LABEL for proper removal
+    mp.command(string.format('vf add @rife-vs:vapoursynth="%s"', vpy_path))
     mp.msg.debug("[rife_adaptive][VPY] VapourSynth filter applied")
+
+    -- Clear initializing flag - activation complete
+    state_manager:set_initializing(false)
+
+    -- Clear skip_crop flag after successful activation
+    if state_manager:get_skip_crop() then
+        state_manager:clear_skip_crop()
+        mp.msg.debug("[rife_adaptive][VPY] Cleared skip_crop flag (activation succeeded)")
+    end
 
     -- Update VSR state
     update_vsr_state()
 
     -- Show OSD status
     local vsr_status
-    if state.vsr_path_active then
-        if state.is_fullscreen then
-            local _, screen_h = get_screen_dims()
-            vsr_status = tostring(screen_h) .. "p (VSR)"
+    if state_manager:get_vsr_path_active() then
+        if state_manager:get_is_fullscreen() then
+            local _, screen_h_disp = get_screen_dims()
+            vsr_status = tostring(screen_h_disp) .. "p (VSR)"
         else
-            vsr_status = tostring(target_h) .. "p (VSR ready)"
+            vsr_status = tostring(result.pipeline.output_h) .. "p (VSR ready)"
         end
     else
-        vsr_status = tostring(target_h) .. "p"
+        vsr_status = tostring(result.pipeline.output_h) .. "p"
     end
 
-    local status = string.format("%dx%d -> %dx%d -> %s",
+    local status = string.format("%dx%d -> %s -> %s",
         source_w, source_h,
-        target_w, target_h,
+        pipeline_str,
         vsr_status)
     osd_message(status, 4)
 end
@@ -308,21 +369,18 @@ end
 -----------
 
 local function toggle_rife()
-    if state.rife_active then
+    if state_manager:get_rife_active() then
         -- Turn off
         mp.msg.debug("[rife_adaptive][TOGGLE] RIFE deactivation requested")
 
-        if state.cropdetect_timer then
-            state.cropdetect_timer:kill()
-            state.cropdetect_timer = nil
+        if state_manager:get_cropdetect_timer() then
+            state_manager:get_cropdetect_timer():kill()
             mp.msg.debug("[rife_adaptive][TOGGLE] Killed pending crop detection timer")
         end
 
         mp.commandv("vf", "remove", "@rife-vsr")
-        mp.commandv("vf", "remove", "vapoursynth")
-        state.rife_active = false
-        state.current_crop = nil
-        state.vsr_path_active = false
+        mp.commandv("vf", "remove", "@rife-vs")
+        state_manager:deactivate_rife()
         mp.msg.debug("[rife_adaptive][TOGGLE] RIFE deactivated, filters removed, state reset")
         osd_message("OFF")
     else
@@ -330,15 +388,23 @@ local function toggle_rife()
         local fps = get_container_fps()
         mp.msg.debug("[rife_adaptive][TOGGLE] RIFE activation requested, container_fps=" .. fps)
 
-        if fps > 50 then
-            mp.msg.debug("[rife_adaptive][TOGGLE] FPS check: " .. fps .. " > 50 = REJECTED")
-            osd_message(string.format("Source FPS %.2f too high", fps), 5)
-            return
-        end
+        if fps >= 50 then
+            -- High-FPS mode: VSR only, skip RIFE/crop/VPY
+            mp.msg.debug("[rife_adaptive][TOGGLE] FPS check: " .. fps .. " >= 50 = VSR-only mode")
+            state_manager:activate_rife("vsr_only")
 
-        mp.msg.debug("[rife_adaptive][TOGGLE] FPS check: " .. fps .. " <= 50 = PASSED")
-        state.rife_active = true
-        start_crop_detection()
+            local source_w, source_h = get_source_dims()
+            state_manager:set_pipeline_targets(source_w, source_h, true)
+
+            mp.msg.debug("[rife_adaptive][TOGGLE] VSR-only mode: target=" .. source_w .. "x" .. source_h)
+            update_vsr_state()
+            osd_message(string.format("VSR-only (%.2f fps)", fps), 3)
+        else
+            -- Normal RIFE mode
+            mp.msg.debug("[rife_adaptive][TOGGLE] FPS check: " .. fps .. " < 50 = RIFE mode")
+            state_manager:activate_rife("normal")
+            start_crop_detection()
+        end
     end
 end
 
@@ -346,14 +412,54 @@ end
 -- Fullscreen Observer
 -----------
 
+-- Skip crop detection and retry with 0 crop
+-- Use this when crop detection is causing issues or engine build is taking too long
+local function skip_crop_and_retry()
+    if not state_manager:get_rife_active() then
+        osd_message("RIFE not active", 2)
+        return
+    end
+
+    -- Set skip_crop flag (persists to disk)
+    state_manager:request_skip_crop()
+    mp.msg.debug("[rife_adaptive][SKIP_CROP] User requested skip crop - retrying with full frame")
+
+    -- Kill any pending crop detection
+    if state_manager:get_cropdetect_timer() then
+        state_manager:get_cropdetect_timer():kill()
+    end
+
+    -- Remove filters and regenerate VPY with no crop
+    mp.commandv("vf", "remove", "@rife-vsr")
+    mp.commandv("vf", "remove", "@rife-vs")
+    state_manager:complete_crop_detection(nil)  -- Clear crop
+    generate_and_apply_vpy()
+    osd_message("Retry: No crop", 3)
+end
+
 local function on_fullscreen_change(name, value)
-    state.is_fullscreen = value or false
-    mp.msg.debug("[rife_adaptive][FULLSCREEN] State changed: " .. tostring(state.is_fullscreen) ..
-                 ", rife_active=" .. tostring(state.rife_active))
-    if state.rife_active then
+    state_manager:set_fullscreen(value or false)
+    mp.msg.debug("[rife_adaptive][FULLSCREEN] State changed: " .. tostring(state_manager:get_is_fullscreen()) ..
+                 ", rife_active=" .. tostring(state_manager:get_rife_active()))
+    if state_manager:get_rife_active() then
         update_vsr_state()
     end
 end
+
+-----------
+-- Shutdown Handler
+-----------
+
+-- Detect when mpv closes during RIFE initialization (e.g., during TensorRT engine build)
+-- Automatically sets skip_crop flag so next run will skip crop detection
+local function on_shutdown()
+    if state_manager:should_skip_on_shutdown() then
+        state_manager:request_skip_crop()
+        mp.msg.debug("[rife_adaptive][SHUTDOWN] RIFE was still initializing - set skip_crop for next run")
+    end
+end
+
+mp.register_event("shutdown", on_shutdown)
 
 -----------
 -- Keybinding
@@ -369,14 +475,25 @@ end
 -- Also bind literal Shift+6 (works on some systems)
 mp.add_forced_key_binding("Shift+6", "toggle-rife-shift6", toggle_rife)
 
+-- Bind Alt+6 for skip crop and retry (when crop detection is problematic)
+mp.add_key_binding("Alt+6", "skip-crop-retry", skip_crop_and_retry)
+
 mp.register_script_message("toggle-adaptive-rife", toggle_rife)
+mp.register_script_message("skip-crop-retry", skip_crop_and_retry)
+
+-----------
+-- Pause Handler (GPU Warmup)
+-----------
+
+local pause_handler = PauseHandler:new(mp, state_manager)
+pause_handler:register_observers()
 
 -----------
 -- Initialization
 -----------
 
 -- Initialize fullscreen state
-state.is_fullscreen = mp.get_property_native("fullscreen") or false
+state_manager:set_fullscreen(mp.get_property_native("fullscreen") or false)
 
 -- Observe fullscreen changes
 mp.observe_property("fullscreen", "bool", on_fullscreen_change)

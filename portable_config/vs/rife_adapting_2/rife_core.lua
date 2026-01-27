@@ -17,6 +17,14 @@ function M.align_to_multiple(value, multiple)
     return math.floor(value / multiple) * multiple
 end
 
+-- Align value to nearest higher multiple (ceiling)
+-- value: number to align
+-- multiple: alignment boundary (e.g., 32 for GPU)
+-- Returns: aligned integer (rounded up)
+function M.align_to_multiple_ceil(value, multiple)
+    return math.ceil(value / multiple) * multiple
+end
+
 -- Calculate scale factor to fit source within max bounds (preserving AR)
 -- Does not upscale (returns 1.0 if source smaller than bounds)
 -- src_w, src_h: source dimensions
@@ -39,90 +47,114 @@ end
 -- This is the core resolution calculation logic (DRY constraint-based approach)
 -- crop_w, crop_h: cropped source dimensions
 -- screen_w, screen_h: display dimensions
--- opts: configuration table with:
---   - enable_vsr: boolean
---   - max_pixels_vsr_on: megapixels when VSR active
---   - max_pixels_vsr_off: megapixels for standard path
---   - min_vsr_mult: minimum display/target ratio for VSR
--- Returns: target_w, target_h, is_vsr_path, scale_factor
-function M.calculate_targets(crop_w, crop_h, screen_w, screen_h, opts)
+-- config: configuration table with nested sections
+-- Returns: table with target_w, target_h, vsr_path, scale, padding, pipeline
+function M.calculate_targets(crop_w, crop_h, screen_w, screen_h, config)
+    local block_align = config.processing.block_align
+
     -- 1. Determine Geometric Constraints
-    -- How much can we scale the source before hitting screen edges?
-    -- We check BOTH Width and Height ratios immediately.
     local scale_w = screen_w / crop_w
     local scale_h = screen_h / crop_h
-    local scale_screen = math.min(scale_w, scale_h) -- The limiting physical factor
+    local scale_screen = math.min(scale_w, scale_h)
 
     -- 2. Determine VSR Eligibility & Budget
-    -- We assume VSR is beneficial if the screen is significantly larger than source
     local use_vsr_path = false
-    local budget_mb = opts.max_pixels_vsr_off
+    local budget_mb = config.gpu.max_pixels_vsr_off
 
-    if opts.enable_vsr then
-        -- If we have room to upscale (physically), check if we should enable VSR logic
-        if scale_screen >= opts.min_vsr_mult then
+    if config.features.enable_vsr then
+        if scale_screen >= config.thresholds.vsr_min_mult then
             use_vsr_path = true
-            budget_mb = opts.max_pixels_vsr_on
+            budget_mb = config.gpu.max_pixels_vsr_on
         end
     end
 
-    -- 3. Determine Performance Constraints
-    -- How much can we scale source before hitting GPU pixel budget?
     local max_pixels = budget_mb * 1000000
-    local src_pixels = crop_w * crop_h
-    local scale_budget = 1.0
 
-    if src_pixels > max_pixels then
-        scale_budget = math.sqrt(max_pixels / src_pixels)
-    end
+    -- 3. Check if Padding is Viable
+    local padded_w = M.align_to_multiple_ceil(crop_w, block_align)
+    local padded_h = M.align_to_multiple_ceil(crop_h, block_align)
+    local padded_pixels = padded_w * padded_h
 
-    -- 4. Final Scale Selection
-    -- The final scale is the most restrictive of:
-    -- A. The Pixel Budget (Performance)
-    -- B. The Screen Size (Geometry)
-    local final_scale = math.min(scale_budget, scale_screen)
+    local use_padding = false
+    local target_w, target_h, actual_scale
+    local orig_w, orig_h, pad_w, pad_h = crop_w, crop_h, 0, 0
 
-    -- 5. Calculate & Align Dimensions
-    -- When screen-limited, align the constraining dimension first to maximize usage.
-    -- When budget-limited, align height first then derive width.
-    local ar = crop_w / crop_h
-    local target_w, target_h
-
-    local is_screen_limited = (scale_screen < scale_budget)
-    local is_width_limited = (scale_w < scale_h)
-
-    if is_screen_limited and is_width_limited then
-        -- Width is the constraining dimension: set width to screen, derive height
-        target_w = M.align_to_multiple(screen_w, 32)
-        target_h = M.align_to_multiple(target_w / ar, 32)
-        if target_h < 32 then target_h = 32 end
-    elseif is_screen_limited and not is_width_limited then
-        -- Height is the constraining dimension: set height to screen, derive width
-        target_h = M.align_to_multiple(screen_h, 32)
-        target_w = M.align_to_multiple(target_h * ar, 32)
+    -- Padding only viable if:
+    -- A) Padded dims fit within pixel budget
+    -- B) Padded dims fit within screen (no upscaling needed)
+    if padded_pixels <= max_pixels and padded_w <= screen_w and padded_h <= screen_h then
+        -- Use padding path: no quality loss
+        use_padding = true
+        target_w = padded_w
+        target_h = padded_h
+        actual_scale = 1.0
+        pad_w = padded_w - crop_w
+        pad_h = padded_h - crop_h
     else
-        -- Budget-limited: calculate from scale, align height first
-        local raw_target_h = math.max(32, crop_h * final_scale)
-        target_h = M.align_to_multiple(raw_target_h, 32)
-        target_w = M.align_to_multiple(target_h * ar, 32)
+        -- Use downscale path (existing logic)
+        local src_pixels = crop_w * crop_h
+        local scale_budget = 1.0
+
+        if src_pixels > max_pixels then
+            scale_budget = math.sqrt(max_pixels / src_pixels)
+        end
+
+        local final_scale = math.min(scale_budget, scale_screen)
+        local ar = crop_w / crop_h
+
+        local is_screen_limited = (scale_screen < scale_budget)
+        local is_width_limited = (scale_w < scale_h)
+
+        if is_screen_limited and is_width_limited then
+            target_w = M.align_to_multiple(screen_w, block_align)
+            target_h = M.align_to_multiple(target_w / ar, block_align)
+            if target_h < block_align then target_h = block_align end
+        elseif is_screen_limited and not is_width_limited then
+            target_h = M.align_to_multiple(screen_h, block_align)
+            target_w = M.align_to_multiple(target_h * ar, block_align)
+        else
+            local raw_target_h = math.max(block_align, crop_h * final_scale)
+            target_h = M.align_to_multiple(raw_target_h, block_align)
+            target_w = M.align_to_multiple(target_h * ar, block_align)
+        end
+
+        -- Safety Clamp
+        if target_w > screen_w then
+            target_w = M.align_to_multiple(screen_w, block_align)
+            target_h = M.align_to_multiple(target_w / ar, block_align)
+            if target_h < block_align then target_h = block_align end
+        end
+
+        if target_h > screen_h then
+            target_h = M.align_to_multiple(screen_h, block_align)
+            target_w = M.align_to_multiple(target_h * ar, block_align)
+        end
+
+        actual_scale = target_h / crop_h
     end
 
-    -- 6. Safety Clamp (handles edge cases from alignment rounding)
-    if target_w > screen_w then
-        target_w = M.align_to_multiple(screen_w, 32)
-        target_h = M.align_to_multiple(target_w / ar, 32)
-        if target_h < 32 then target_h = 32 end
-    end
-
-    if target_h > screen_h then
-        target_h = M.align_to_multiple(screen_h, 32)
-        target_w = M.align_to_multiple(target_h * ar, 32)
-    end
-
-    -- Recalculate actual resulting scale for UI display
-    local actual_scale = target_h / crop_h
-
-    return target_w, target_h, use_vsr_path, actual_scale
+    -- Build result table
+    return {
+        target_w = target_w,
+        target_h = target_h,
+        vsr_path = use_vsr_path,
+        scale = actual_scale,
+        padding = {
+            enabled = use_padding,
+            orig_w = orig_w,
+            orig_h = orig_h,
+            pad_w = pad_w,
+            pad_h = pad_h,
+        },
+        pipeline = {
+            crop_w = crop_w,
+            crop_h = crop_h,
+            process_w = target_w,
+            process_h = target_h,
+            output_w = use_padding and orig_w or target_w,
+            output_h = use_padding and orig_h or target_h,
+        }
+    }
 end
 
 return M

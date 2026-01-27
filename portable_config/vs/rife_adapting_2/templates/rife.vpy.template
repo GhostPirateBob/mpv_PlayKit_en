@@ -1,0 +1,41 @@
+# templates/rife.vpy.template
+import sys
+import os
+sys.path.insert(0, r"{{script_dir}}")
+
+import vapoursynth as vs
+from vapoursynth import core
+from rife_processor import process
+
+clip = video_in
+
+# Process with RIFE
+clip = process(
+    clip=clip,
+    crop_l={{crop_l}},
+    crop_t={{crop_t}},
+    crop_w={{crop_w}},
+    crop_h={{crop_h}},
+    target_w={{target_w}},
+    target_h={{target_h}},
+    model={{model_number}},
+    gpu_id={{gpu_device_id}},
+    gpu_t={{gpu_threads}},
+    padding_enabled={{padding_enabled}},
+    padding_orig_w={{padding_orig_w}},
+    padding_orig_h={{padding_orig_h}},
+    multiplier={{multiplier}},
+    model_dir="{{model_dir}}",
+    model_map={{model_map}},
+    ensemble={{ensemble}},
+    implementation={{implementation}},
+    trt_int8={{trt_int8}},
+    trt_fp16={{trt_fp16}},
+    trt_workspace={{trt_workspace}},
+    trt_cuda_graph={{trt_cuda_graph}},
+    trt_cublas={{trt_cublas}},
+    trt_cudnn={{trt_cudnn}},
+    trt_static_shape={{trt_static_shape}}
+)
+
+clip.set_output()
