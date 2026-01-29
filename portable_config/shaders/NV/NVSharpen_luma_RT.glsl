@@ -22,9 +22,9 @@ LICENSE:
 0
 
 
-//!HOOK MAIN
+//!HOOK LUMA
 //!BIND HOOKED
-//!DESC [NVSharpen_RT] (SDK v1.0.3)
+//!DESC [NVSharpen_luma_RT] (SDK v1.0.3)
 //!WHEN SHARP
 //!COMPUTE 32 32 256 1
 
@@ -138,17 +138,6 @@ float getSharpLimitMax() {
 
 float getSharpLimitScale() {
 	return getSharpLimitMax() - getSharpLimitMin();
-}
-
-// Get luma from RGB
-float getY(vec3 rgba) {
-#if NIS_HDR_MODE == 2
-	return 0.262 * rgba.r + 0.678 * rgba.g + 0.0593 * rgba.b;
-#elif NIS_HDR_MODE == 1
-	return sqrt(0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b) * kHDRCompressionFactor;
-#else
-	return 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
-#endif
 }
 
 // Edge detection
@@ -293,8 +282,8 @@ void hook() {
 			for (int dx = 0; dx < 2; dx++) {
 				float tx = (float(dstBlockX) + float(pos.x) + float(dx) + kShift) * HOOKED_pt.x;
 				float ty = (float(dstBlockY) + float(pos.y) + float(dy) + kShift) * HOOKED_pt.y;
-				vec4 px = HOOKED_tex(vec2(tx, ty));
-				shPixelsY[pos.y + uint(dy)][pos.x + uint(dx)] = getY(px.rgb);
+				// LUMA plane use .x directly
+				shPixelsY[pos.y + uint(dy)][pos.x + uint(dx)] = HOOKED_tex(vec2(tx, ty)).x;
 			}
 		}
 	}
@@ -321,7 +310,7 @@ void hook() {
 		// Final USM is a weighted sum of filter outputs
 		float usmY = dirUSM.x * w.x + dirUSM.y * w.y + dirUSM.z * w.z + dirUSM.w * w.w;
 
-		// Do bilinear tap and correct rgb texel so it produces new sharpened luma
+		// Output coordinates
 		int dstX = dstBlockX + pos.x;
 		int dstY = dstBlockY + pos.y;
 
@@ -340,9 +329,9 @@ void hook() {
 		newY = max(newY, 0.0);
 		float oldY = p[2][2];
 		float corr = (newY * newY + kEps) / (oldY * oldY + kEps);
-		op.rgb *= corr;
+		op.x *= corr;
 #else
-		op.rgb += usmY;
+		op.x += usmY;
 #endif
 
 		op = clamp(op, 0.0, 1.0);

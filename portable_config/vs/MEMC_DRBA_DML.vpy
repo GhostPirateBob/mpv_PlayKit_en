@@ -1,5 +1,5 @@
 ### https://github.com/hooke007/mpv_PlayKit/wiki/3_K7sfunc
-### RIFE (v4+) 补帧，性能要求较高，DX12显卡专用
+### DRBA 补帧，性能要求较高，DX12显卡专用
 
 import vapoursynth as vs
 from vapoursynth import core
@@ -27,6 +27,6 @@ Lk_Fmt = False
 
 ret = k7f.FPS_CTRL(clip, fps_in=container_fps, fps_ret=True)
 clip = k7f.FMT_CTRL(clip, h_max=H_Pre, fmt_pix=1 if Lk_Fmt else 0)
-clip = k7f.RIFE_DML(clip, model=46, turbo=True, fps_in=container_fps, fps_num=Fps_Num, fps_den=Fps_Den, sc_mode=1, gpu=Gpu, gpu_t=Gpu_T)
+clip = k7f.DRBA_DML(clip, model=2, turbo=2, fps_in=container_fps, fps_num=Fps_Num, fps_den=Fps_Den, sc_mode=0, gpu=Gpu, gpu_t=Gpu_T)
 
 clip.set_output()

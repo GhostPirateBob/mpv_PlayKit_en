@@ -31,8 +31,7 @@ LICENSE:
 
 #define UseEdgeDirection 1
 
-float fastLanczos2(float x)
-{
+float fastLanczos2(float x) {
 	float wA = x-4.0;
 	float wB = x*wA-wA;
 	wA *= wA;
@@ -61,8 +60,7 @@ vec2 weightY(float dx, float dy, float c, float data)
 	return vec2(w, w * c);
 }
 
-vec2 edgeDirection(vec4 left, vec4 right)
-{
+vec2 edgeDirection(vec4 left, vec4 right) {
 	vec2 dir;
 	float RxLz = (right.x + (-left.z));
 	float RwLy = (right.w + (-left.y));
@@ -75,10 +73,10 @@ vec2 edgeDirection(vec4 left, vec4 right)
 	return dir;
 }
 
-vec4 hook()
-{
+vec4 hook() {
 
 	vec4 color = HOOKED_texOff(vec2(0.0));
+	float orig_alpha = color.a;
 
 	vec2 imgCoord = (HOOKED_pos * HOOKED_size) + vec2(-0.5, 0.5);
 	vec2 imgCoordPixel = floor(imgCoord);
@@ -89,8 +87,7 @@ vec4 hook()
 
 	float edgeVote = abs(left.z - left.y) + abs(color.g - left.y) + abs(color.g - left.z);
 
-	if(edgeVote > (ET / 255.0))
-	{
+	if(edgeVote > (ET / 255.0)) {
 		gather_coord.x += HOOKED_pt.x;
 
 		vec4 right = HOOKED_gather(gather_coord + vec2(HOOKED_pt.x, 0.0), 1);
@@ -105,7 +102,9 @@ vec4 hook()
 		upDown = upDown - vec4(mean);
 		color.w = color.g - mean;
 
-		float sum = (((((abs(left.x)+abs(left.y))+abs(left.z))+abs(left.w))+(((abs(right.x)+abs(right.y))+abs(right.z))+abs(right.w)))+(((abs(upDown.x)+abs(upDown.y))+abs(upDown.z))+abs(upDown.w)));
+		float sum = (((((abs(left.x)+abs(left.y))+abs(left.z))+abs(left.w))+
+			          (((abs(right.x)+abs(right.y))+abs(right.z))+abs(right.w)))+
+			          (((abs(upDown.x)+abs(upDown.y))+abs(upDown.z))+abs(upDown.w)));
 		float sumMean = 1.014185e+01 / sum;
 		float std = (sumMean*sumMean);
 
@@ -139,7 +138,7 @@ vec4 hook()
 		color.b = clamp((color.b+deltaY),0.0,1.0);
 	}
 
-	color.a = 1.0;
+	color.a = orig_alpha;
 	return color;
 
 }

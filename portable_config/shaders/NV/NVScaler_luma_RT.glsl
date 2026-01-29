@@ -22,13 +22,13 @@ LICENSE:
 0
 
 
-//!HOOK MAIN
+//!HOOK LUMA
 //!BIND HOOKED
 //!BIND coef_scaler_fp16
 //!BIND coef_usm_fp16
 //!BIND coef_scaler
 //!BIND coef_usm
-//!DESC [NVScaler_RT] (SDK v1.0.3)
+//!DESC [NVScaler_luma_RT] (SDK v1.0.3)
 //!WIDTH OUTPUT.w
 //!HEIGHT OUTPUT.h
 //!WHEN OUTPUT.w HOOKED.w 1.0 * > OUTPUT.h HOOKED.h 1.0 * > *
@@ -49,8 +49,6 @@ LICENSE:
 #define kTileSize (kTilePitch * (NIS_BLOCK_HEIGHT + kPadSize))
 #define kEdgeMapPitch (NIS_BLOCK_WIDTH + 2)
 #define kEdgeMapSize (kEdgeMapPitch * (NIS_BLOCK_HEIGHT + 2))
-
-#define kHDRCompressionFactor 0.282842712
 
 shared float shPixelsY[kTileSize];
 shared float shCoefScaler[kPhaseCount][kFilterSize];
@@ -155,20 +153,6 @@ float getSharpLimitMax() {
 
 float getSharpLimitScale() {
 	return getSharpLimitMax() - getSharpLimitMin();
-}
-
-float getY(vec3 rgba) {
-#if NIS_HDR_MODE == 2
-	return 0.262 * rgba.r + 0.678 * rgba.g + 0.0593 * rgba.b;
-#elif NIS_HDR_MODE == 1
-	return sqrt(0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b) * kHDRCompressionFactor;
-#else
-	return 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
-#endif
-}
-
-float getYLinear(vec3 rgba) {
-	return 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
 }
 
 vec4 GetEdgeMap(float p[4][4], int i, int j) {
@@ -440,14 +424,13 @@ void hook() {
 		{
 			float ksrcX = (float(srcBlockStartX) + float(px) + kShift + 0.5) * HOOKED_pt.x;
 			float ksrcY = (float(srcBlockStartY) + float(py) + kShift + 0.5) * HOOKED_pt.y;
-			vec4 sr = HOOKED_gather(vec2(ksrcX, ksrcY), 0);
-			vec4 sg = HOOKED_gather(vec2(ksrcX, ksrcY), 1);
-			vec4 sb = HOOKED_gather(vec2(ksrcX, ksrcY), 2);
+			// LUMA gather component 0
+			vec4 sg = HOOKED_gather(vec2(ksrcX, ksrcY), 0);
 
-			p[0][0] = getY(vec3(sr.w, sg.w, sb.w));
-			p[0][1] = getY(vec3(sr.z, sg.z, sb.z));
-			p[1][0] = getY(vec3(sr.x, sg.x, sb.x));
-			p[1][1] = getY(vec3(sr.y, sg.y, sb.y));
+			p[0][0] = sg.w;
+			p[0][1] = sg.z;
+			p[1][0] = sg.x;
+			p[1][1] = sg.y;
 		}
 #else
 		for (int j = 0; j < 2; j++) {
@@ -455,8 +438,8 @@ void hook() {
 				// Convert to normalized texture coordinates with 0.5 texel center offset
 				float tx = (srcX + float(k) + 0.5) * HOOKED_pt.x;
 				float ty = (srcY + float(j) + 0.5) * HOOKED_pt.y;
-				vec4 px_color = HOOKED_tex(vec2(tx, ty));
-				p[j][k] = getY(px_color.rgb);
+				// LUMA use .x directly
+				p[j][k] = HOOKED_tex(vec2(tx, ty)).x;
 			}
 		}
 #endif
@@ -531,30 +514,15 @@ void hook() {
 		opY += FilterNormal(p, fx_int, fy_int) * baseWeight;
 		opY += AddDirFilters(p, fx, fy, fx_int, fy_int, w);
 
-		// Sample the source at the corresponding position
-		float srcTexX = (srcX + 0.5) * HOOKED_pt.x;
-		float srcTexY = (srcY + 0.5) * HOOKED_pt.y;
 		ivec2 dstCoord = ivec2(dstX, dstY);
 
 		if (dstX >= int(target_size.x) || dstY >= int(target_size.y)) {
 			continue;
 		}
 
-		vec4 op = HOOKED_tex(vec2(srcTexX, srcTexY));
-		float y = getY(op.rgb);
-
-#if NIS_HDR_MODE == 1
-		float kEps = 1e-4;
-		float opYN = max(opY, 0.0) / kHDRCompressionFactor;
-		float corr = (opYN * opYN + kEps) / (max(getYLinear(op.rgb), 0.0) + kEps);
-		op.rgb *= corr;
-#else
-		float corr = opY - y;
-		op.rgb += corr;
-#endif
-
-		op = clamp(op, 0.0, 1.0);
-		imageStore(out_image, dstCoord, op);
+		// Output scaled and sharpened luma
+		float op = clamp(opY, 0.0, 1.0);
+		imageStore(out_image, dstCoord, vec4(op, 0.0, 0.0, 1.0));
 	}
 
 }

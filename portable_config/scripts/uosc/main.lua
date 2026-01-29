@@ -1,6 +1,6 @@
 --[[
 SOURCE_ https://github.com/tomasklaen/uosc/tree/main/src/uosc
-COMMIT_ 0c8ca8b832270adee7684db6472c86f7aba2b170
+COMMIT_ b77c1f95a877979bd5acef63bad84b03275a18af
 文档_ https://github.com/hooke007/mpv_PlayKit/discussions/186
 
 极简主义设计驱动的多功能界面脚本群组，兼容 thumbfast 新缩略图引擎
@@ -161,6 +161,7 @@ local config_defaults = {
 		foreground_text = serialize_rgba('000000').color,
 		background = serialize_rgba('000000').color,
 		background_text = serialize_rgba('ffffff').color,
+		window_border = serialize_rgba('000000').color,
 		curtain = serialize_rgba('000000').color,
 		success = serialize_rgba('a5e075').color,
 		error = serialize_rgba('ff616e').color,
@@ -987,7 +988,10 @@ bind_command('show-in-directory', function()
 end)
 bind_command('stream-quality', open_stream_quality_menu)
 bind_command('open-file', open_open_file_menu)
-bind_command('shuffle', function() set_state('shuffle', not state.shuffle) end)
+bind_command('shuffle', function()
+	set_state('shuffle', not state.shuffle)
+--	mp.osd_message(state.shuffle and t('Shuffle ON') or t('Shuffle OFF')) -- 没必要提示
+end)
 bind_command('items', function()
 	if state.has_playlist then
 		mp.command('script-binding uosc/playlist')

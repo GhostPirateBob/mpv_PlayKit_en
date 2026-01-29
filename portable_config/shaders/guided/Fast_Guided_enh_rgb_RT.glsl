@@ -36,7 +36,7 @@ LICENSE:
 //!HOOK MAIN
 //!BIND HOOKED
 //!SAVE FGF_DOWN_RGB
-//!DESC [Fast_Guided_rgb_enh_RT] Downsample
+//!DESC [Fast_Guided_enh_rgb_RT] Downsample
 //!WIDTH HOOKED.w SUBSAM /
 //!HEIGHT HOOKED.h SUBSAM /
 //!WHEN STR SUBSAM 1 > *
@@ -52,7 +52,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND HOOKED
 //!SAVE FGF_DOWN_RGB
-//!DESC [Fast_Guided_rgb_enh_RT] Prepare
+//!DESC [Fast_Guided_enh_rgb_RT] Prepare
 //!WIDTH HOOKED.w
 //!HEIGHT HOOKED.h
 //!WHEN STR SUBSAM 1 = *
@@ -68,7 +68,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_DOWN_RGB
 //!SAVE FGF_PROD1
-//!DESC [Fast_Guided_rgb_enh_RT] Prodt1
+//!DESC [Fast_Guided_enh_rgb_RT] Prodt1
 //!WIDTH FGF_DOWN_RGB.w
 //!HEIGHT FGF_DOWN_RGB.h
 //!WHEN STR
@@ -84,7 +84,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_DOWN_RGB
 //!SAVE FGF_PROD2
-//!DESC [Fast_Guided_rgb_enh_RT] Prodt2
+//!DESC [Fast_Guided_enh_rgb_RT] Prodt2
 //!WIDTH FGF_DOWN_RGB.w
 //!HEIGHT FGF_DOWN_RGB.h
 //!WHEN STR
@@ -100,7 +100,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_DOWN_RGB
 //!SAVE FGF_PROD3
-//!DESC [Fast_Guided_rgb_enh_RT] Prodt3
+//!DESC [Fast_Guided_enh_rgb_RT] Prodt3
 //!WIDTH FGF_DOWN_RGB.w
 //!HEIGHT FGF_DOWN_RGB.h
 //!COMPONENTS 1
@@ -116,7 +116,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_DOWN_RGB
 //!SAVE FGF_RGB_H
-//!DESC [Fast_Guided_rgb_enh_RT] H-Box RGB
+//!DESC [Fast_Guided_enh_rgb_RT] H-Box RGB
 //!WIDTH FGF_DOWN_RGB.w
 //!HEIGHT FGF_DOWN_RGB.h
 //!WHEN STR
@@ -139,7 +139,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD1
 //!SAVE FGF_PROD1_H
-//!DESC [Fast_Guided_rgb_enh_RT] H-Box Prodt1
+//!DESC [Fast_Guided_enh_rgb_RT] H-Box Prodt1
 //!WIDTH FGF_PROD1.w
 //!HEIGHT FGF_PROD1.h
 //!WHEN STR
@@ -162,7 +162,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD2
 //!SAVE FGF_PROD2_H
-//!DESC [Fast_Guided_rgb_enh_RT] H-Box Prodt2
+//!DESC [Fast_Guided_enh_rgb_RT] H-Box Prodt2
 //!WIDTH FGF_PROD2.w
 //!HEIGHT FGF_PROD2.h
 //!WHEN STR
@@ -185,7 +185,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD3
 //!SAVE FGF_PROD3_H
-//!DESC [Fast_Guided_rgb_enh_RT] H-Box Prodt3
+//!DESC [Fast_Guided_enh_rgb_RT] H-Box Prodt3
 //!WIDTH FGF_PROD3.w
 //!HEIGHT FGF_PROD3.h
 //!COMPONENTS 1
@@ -209,7 +209,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_RGB_H
 //!SAVE FGF_MEAN_RGB
-//!DESC [Fast_Guided_rgb_enh_RT] V-Box RGB
+//!DESC [Fast_Guided_enh_rgb_RT] V-Box RGB
 //!WIDTH FGF_RGB_H.w
 //!HEIGHT FGF_RGB_H.h
 //!WHEN STR
@@ -232,7 +232,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD1_H
 //!SAVE FGF_MEAN_PROD1
-//!DESC [Fast_Guided_rgb_enh_RT] V-Box Prodt1
+//!DESC [Fast_Guided_enh_rgb_RT] V-Box Prodt1
 //!WIDTH FGF_PROD1_H.w
 //!HEIGHT FGF_PROD1_H.h
 //!WHEN STR
@@ -255,7 +255,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD2_H
 //!SAVE FGF_MEAN_PROD2
-//!DESC [Fast_Guided_rgb_enh_RT] V-Box Prodt2
+//!DESC [Fast_Guided_enh_rgb_RT] V-Box Prodt2
 //!WIDTH FGF_PROD2_H.w
 //!HEIGHT FGF_PROD2_H.h
 //!WHEN STR
@@ -278,7 +278,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_PROD3_H
 //!SAVE FGF_MEAN_PROD3
-//!DESC [Fast_Guided_rgb_enh_RT] V-Box Prodt3
+//!DESC [Fast_Guided_enh_rgb_RT] V-Box Prodt3
 //!WIDTH FGF_PROD3_H.w
 //!HEIGHT FGF_PROD3_H.h
 //!COMPONENTS 1
@@ -305,7 +305,7 @@ vec4 hook() {
 //!BIND FGF_MEAN_PROD2
 //!BIND FGF_MEAN_PROD3
 //!SAVE FGF_COEF
-//!DESC [Fast_Guided_rgb_enh_RT] Coefficients
+//!DESC [Fast_Guided_enh_rgb_RT] Coefficients
 //!WIDTH FGF_MEAN_RGB.w
 //!HEIGHT FGF_MEAN_RGB.h
 //!WHEN STR
@@ -357,7 +357,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_COEF
 //!SAVE FGF_COEF_H
-//!DESC [Fast_Guided_rgb_enh_RT] H-Box coef
+//!DESC [Fast_Guided_enh_rgb_RT] H-Box coef
 //!WIDTH FGF_COEF.w
 //!HEIGHT FGF_COEF.h
 //!WHEN STR
@@ -380,7 +380,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND FGF_COEF_H
 //!SAVE FGF_MEAN_COEF
-//!DESC [Fast_Guided_rgb_enh_RT] V-Box coef
+//!DESC [Fast_Guided_enh_rgb_RT] V-Box coef
 //!WIDTH FGF_COEF_H.w
 //!HEIGHT FGF_COEF_H.h
 //!WHEN STR
@@ -403,7 +403,7 @@ vec4 hook() {
 //!HOOK MAIN
 //!BIND HOOKED
 //!BIND FGF_MEAN_COEF
-//!DESC [Fast_Guided_rgb_enh_RT] Fin
+//!DESC [Fast_Guided_enh_rgb_RT] Fin
 //!WHEN STR
 
 vec4 hook() {
@@ -420,7 +420,6 @@ vec4 hook() {
 	float enhanced_luma = p + STR * detail;
 	float ratio = (p > 0.001) ? (enhanced_luma / p) : 1.0;
 	vec3 result = I * ratio;
-
 	return vec4(clamp(result, 0.0, 1.0), orig.a);
 
 }

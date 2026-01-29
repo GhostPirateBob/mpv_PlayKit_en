@@ -58,7 +58,6 @@ vec4 hook() {
 		color.rgb = clamp(color.rgb, 0.0, 1.0);
 	}
 
-	color.a = 1.0;
 	return color;
 
 }

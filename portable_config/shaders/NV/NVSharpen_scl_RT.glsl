@@ -22,9 +22,9 @@ LICENSE:
 0
 
 
-//!HOOK MAIN
+//!HOOK SCALED
 //!BIND HOOKED
-//!DESC [NVSharpen_RT] (SDK v1.0.3)
+//!DESC [NVSharpen_scl_RT] (SDK v1.0.3)
 //!WHEN SHARP
 //!COMPUTE 32 32 256 1
 
